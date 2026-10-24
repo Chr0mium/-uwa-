@@ -1,0 +1,3 @@
+"""UK Wind Power Analytics backend application package."""
+
+__version__ = "0.1.0"
