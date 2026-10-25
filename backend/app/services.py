@@ -119,48 +119,51 @@ def process_and_align_data(
     target = pd.to_datetime(target_date).date()
     cutoff = pd.Timestamp(target)
 
-    # Prepare actual generation at 30-minute resolution.
+    # Actual generation: retain the original 30-minute intervals.
     a = df_actual.copy()
-    if a.empty:
-        a = pd.DataFrame(columns=["startTime", "generation"])
-
     a["startTime"] = _to_naive_utc(a["startTime"])
     a["generation"] = pd.to_numeric(a["generation"], errors="coerce")
-    a = a[a["startTime"].dt.date == target]
+    a = a[a["startTime"].dt.date == target].copy()
 
     if not df_actual.empty and a.empty:
         raise ValueError(
-            "Elexon returned data but no rows on the target date; "
-            "the date-range parameter was not honoured by the API."
+            "Elexon returned actual data but no rows on the target date."
         )
 
+    a = a.dropna(subset=["startTime"])
     a = a.rename(columns={"generation": "generation_actual"})
 
-    # Prepare forecasts, retaining the latest publication before the
-    # start of the delivery day for each 30-minute settlement period.
+    # Forecasts: retain only publications available before the delivery day.
     f = df_forecast.copy()
-    if f.empty:
-        f = pd.DataFrame(
-            columns=["startTime", "publishTime", "generation"]
-        )
-
     f["startTime"] = _to_naive_utc(f["startTime"])
     f["publishTime"] = _to_naive_utc(f["publishTime"])
     f["generation"] = pd.to_numeric(f["generation"], errors="coerce")
 
-    f = f[f["startTime"].dt.date == target]
-    f = f[f["publishTime"] <= cutoff]
+    f = f[
+        (f["startTime"].dt.date == target)
+        & (f["publishTime"] <= cutoff)
+    ].copy()
 
+    # Keep the latest eligible revision for each hourly forecast.
+    f = (
+        f.dropna(subset=["startTime", "publishTime"])
+        .sort_values("publishTime")
+        .drop_duplicates(subset=["startTime"], keep="last")
+    )
+
+    # Keep the latest eligible publication for each exact timestamp.
     f = (
         f.sort_values("publishTime")
         .drop_duplicates(subset=["startTime"], keep="last")
     )
 
+    a = a.rename(columns={"generation": "generation_actual"})
     f = f.rename(columns={"generation": "generation_forecast"})
 
-    # Left join preserves every actual 30-minute interval.
+    # Exact timestamp matching only; never copy hourly values into
+    # half-hour intervals or use forecasts published after the cutoff.
     merged = pd.merge(
-        a[["startTime", "generation_actual"]],
+        a,
         f[["startTime", "generation_forecast"]],
         on="startTime",
         how="left",
