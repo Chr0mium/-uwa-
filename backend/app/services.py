@@ -127,17 +127,42 @@ def process_and_align_data(df_actual: pd.DataFrame, df_forecast: pd.DataFrame, t
             "parameter was not honoured by the API."
         )
 
+
     f = df_forecast.copy()
     f["startTime"] = _to_naive_utc(f["startTime"])
     f["publishTime"] = _to_naive_utc(f["publishTime"])
     f["generation"] = pd.to_numeric(f["generation"], errors="coerce")
+
     f = f[f["startTime"].dt.date == target]
     f = f[f["publishTime"] <= cutoff]
-    f = f.sort_values("publishTime").drop_duplicates(subset=["startTime"], keep="last")
 
-    merged = pd.merge(a, f, on="startTime", how="left", suffixes=("_actual", "_forecast"))
+    f = (
+        f.sort_values("publishTime")
+        .drop_duplicates(subset=["startTime"], keep="last")
+        .sort_values("startTime")
+    )
+
+    f["startTime"] = f["startTime"].dt.floor("h")
+    f = f.drop_duplicates(subset=["startTime"], keep="last")
+
+    a["forecastHour"] = a["startTime"].dt.floor("h")
+    f = f.rename(
+        columns={
+            "startTime": "forecastHour",
+            "generation": "generation_forecast",
+        }
+    )
+
+    merged = pd.merge(
+        a,
+        f[["forecastHour", "generation_forecast"]],
+        on="forecastHour",
+        how="left",
+    )
+    merged = merged.drop(columns=["forecastHour"])
     merged = merged.dropna(subset=["startTime"])
     return merged
+
 
 
 def calculate_metrics(df: pd.DataFrame):
