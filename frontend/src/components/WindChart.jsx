@@ -20,7 +20,15 @@ export default function WindChart({ data }) {
         <Tooltip />
         <Legend />
         <Line type="monotone" dataKey="Actual" stroke="#2563eb" strokeWidth={2} dot={false} />
-        <Line type="monotone" dataKey="Forecast" stroke="#b45309" strokeWidth={2} strokeDasharray="5 5" dot={false} />
+        <Line
+          type="monotone"
+          dataKey="Forecast"
+          stroke="#b45309"
+          strokeWidth={2}
+          strokeDasharray="5 5"
+          dot={false}
+          connectNulls
+        />
       </LineChart>
     </ResponsiveContainer>
   );
