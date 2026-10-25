@@ -111,6 +111,7 @@ def fetch_elexon_data(start_date: str, end_date: str):
 
     return df_actual, df_forecast
 
+
 def process_and_align_data(
     df_actual: pd.DataFrame,
     df_forecast: pd.DataFrame,
@@ -119,7 +120,7 @@ def process_and_align_data(
     target = pd.to_datetime(target_date).date()
     cutoff = pd.Timestamp(target)
 
-    # Actual generation: retain the original 30-minute intervals.
+    # Actual generation at 30-minute intervals.
     a = df_actual.copy()
     a["startTime"] = _to_naive_utc(a["startTime"])
     a["generation"] = pd.to_numeric(a["generation"], errors="coerce")
@@ -133,44 +134,66 @@ def process_and_align_data(
     a = a.dropna(subset=["startTime"])
     a = a.rename(columns={"generation": "generation_actual"})
 
-    # Forecasts: retain only publications available before the delivery day.
+    # Keep only forecasts published before the delivery day.
     f = df_forecast.copy()
     f["startTime"] = _to_naive_utc(f["startTime"])
     f["publishTime"] = _to_naive_utc(f["publishTime"])
     f["generation"] = pd.to_numeric(f["generation"], errors="coerce")
+
+    # Detect the forecast resolution from all records for the target day,
+    # before filtering by publication cutoff. This preserves exact matching
+    # when half-hour forecast records exist, even if they were published late.
+    target_forecasts = f[
+        f["startTime"].dt.date == target
+    ].copy()
+
+    has_half_hour_forecasts = (
+        (target_forecasts["startTime"].dt.minute % 60 != 0).any()
+    )
 
     f = f[
         (f["startTime"].dt.date == target)
         & (f["publishTime"] <= cutoff)
     ].copy()
 
-    # Keep the latest eligible revision for each hourly forecast.
     f = (
         f.dropna(subset=["startTime", "publishTime"])
         .sort_values("publishTime")
         .drop_duplicates(subset=["startTime"], keep="last")
     )
 
-    # Keep the latest eligible publication for each exact timestamp.
-    f = (
-        f.sort_values("publishTime")
-        .drop_duplicates(subset=["startTime"], keep="last")
-    )
-
-    a = a.rename(columns={"generation": "generation_actual"})
     f = f.rename(columns={"generation": "generation_forecast"})
 
-    # Exact timestamp matching only; never copy hourly values into
-    # half-hour intervals or use forecasts published after the cutoff.
-    merged = pd.merge(
-        a,
-        f[["startTime", "generation_forecast"]],
-        on="startTime",
-        how="left",
-        validate="one_to_one",
-    )
+    if has_half_hour_forecasts:
+        # Sub-hourly forecasts: match exact timestamps only.
+        merged = a.merge(
+            f[["startTime", "generation_forecast"]],
+            on="startTime",
+            how="left",
+            validate="one_to_one",
+        )
+    else:
+        # Hourly forecasts: use each hourly value for both half-hour
+        # actual intervals in that hour.
+        a["forecastHour"] = a["startTime"].dt.floor("h")
+        f["forecastHour"] = f["startTime"].dt.floor("h")
+
+        hourly = (
+            f.sort_values("publishTime")
+            .drop_duplicates(subset=["forecastHour"], keep="last")
+            [["forecastHour", "generation_forecast"]]
+        )
+
+        merged = a.merge(
+            hourly,
+            on="forecastHour",
+            how="left",
+            validate="many_to_one",
+        ).drop(columns=["forecastHour"])
 
     return merged.dropna(subset=["startTime"])
+
+
 
 def calculate_metrics(df: pd.DataFrame):
     valid = df.dropna(subset=["generation_actual", "generation_forecast"])
