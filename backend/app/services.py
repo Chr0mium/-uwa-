@@ -111,24 +111,39 @@ def fetch_elexon_data(start_date: str, end_date: str):
 
     return df_actual, df_forecast
 
-
-def process_and_align_data(df_actual: pd.DataFrame, df_forecast: pd.DataFrame, target_date: str):
+def process_and_align_data(
+    df_actual: pd.DataFrame,
+    df_forecast: pd.DataFrame,
+    target_date: str,
+):
     target = pd.to_datetime(target_date).date()
-    cutoff = pd.Timestamp(target) 
+    cutoff = pd.Timestamp(target)
 
+    # Prepare actual generation at 30-minute resolution.
     a = df_actual.copy()
+    if a.empty:
+        a = pd.DataFrame(columns=["startTime", "generation"])
+
     a["startTime"] = _to_naive_utc(a["startTime"])
     a["generation"] = pd.to_numeric(a["generation"], errors="coerce")
     a = a[a["startTime"].dt.date == target]
 
     if not df_actual.empty and a.empty:
         raise ValueError(
-            "Elexon returned data but no rows on the target date; the date-range "
-            "parameter was not honoured by the API."
+            "Elexon returned data but no rows on the target date; "
+            "the date-range parameter was not honoured by the API."
         )
 
+    a = a.rename(columns={"generation": "generation_actual"})
 
+    # Prepare forecasts, retaining the latest publication before the
+    # start of the delivery day for each 30-minute settlement period.
     f = df_forecast.copy()
+    if f.empty:
+        f = pd.DataFrame(
+            columns=["startTime", "publishTime", "generation"]
+        )
+
     f["startTime"] = _to_naive_utc(f["startTime"])
     f["publishTime"] = _to_naive_utc(f["publishTime"])
     f["generation"] = pd.to_numeric(f["generation"], errors="coerce")
@@ -139,31 +154,20 @@ def process_and_align_data(df_actual: pd.DataFrame, df_forecast: pd.DataFrame, t
     f = (
         f.sort_values("publishTime")
         .drop_duplicates(subset=["startTime"], keep="last")
-        .sort_values("startTime")
     )
 
-    f["startTime"] = f["startTime"].dt.floor("h")
-    f = f.drop_duplicates(subset=["startTime"], keep="last")
+    f = f.rename(columns={"generation": "generation_forecast"})
 
-    a["forecastHour"] = a["startTime"].dt.floor("h")
-    f = f.rename(
-        columns={
-            "startTime": "forecastHour",
-            "generation": "generation_forecast",
-        }
-    )
-
+    # Left join preserves every actual 30-minute interval.
     merged = pd.merge(
-        a,
-        f[["forecastHour", "generation_forecast"]],
-        on="forecastHour",
+        a[["startTime", "generation_actual"]],
+        f[["startTime", "generation_forecast"]],
+        on="startTime",
         how="left",
+        validate="one_to_one",
     )
-    merged = merged.drop(columns=["forecastHour"])
-    merged = merged.dropna(subset=["startTime"])
-    return merged
 
-
+    return merged.dropna(subset=["startTime"])
 
 def calculate_metrics(df: pd.DataFrame):
     valid = df.dropna(subset=["generation_actual", "generation_forecast"])
